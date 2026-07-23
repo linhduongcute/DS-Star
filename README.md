@@ -1,6 +1,6 @@
 # DS-STAR: A Data Science Agentic Framework
 
-DS-STAR (Data Science - Structured Thought and Action) is a Python-based agentic framework for automating data science tasks. It leverages a multi-agent system powered by Google's Gemini models to analyze data, devise a plan, write and execute code, and iteratively refine the solution to answer a user's query.
+DS-STAR (Data Science - Structured Thought and Action) is a Python-based agentic framework for automating data science tasks. It leverages a multi-agent system powered by large language models to analyze data, devise a plan, write and execute code, and iteratively refine the solution to answer a user's query.
 
 This project is an implementation of the paper from Google Research: [DS-STAR: A State-of-the-Art Versatile Data Science Agent](https://research.google/blog/ds-star-a-state-of-the-art-versatile-data-science-agent/). [Paper](https://arxiv.org/pdf/2509.21825)
 
@@ -48,7 +48,7 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 ### Prerequisites
 
 - Python 3.11+
-- An API key for Google's Gemini models.
+- An OpenRouter API key.
 - [uv](https://docs.astral.sh/uv/) package manager (recommended)
 
 ### Installation
@@ -74,9 +74,9 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 ### Configuration
 
 1.  **Set your API Key:**
-    The application requires a Gemini API key. You can set it as an environment variable:
+    The default configuration uses DeepSeek V4 Flash through OpenRouter. Set its API key as an environment variable:
     ```bash
-    export GEMINI_API_KEY='your-api-key'
+    export OPENROUTER_API_KEY='sk-or-v1-...'
     ```
     Alternatively, you can add it to the `config.yaml` file.
 
@@ -85,16 +85,16 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 
     ```yaml
     # config.yaml
-    model_name: 'gemini-1.5-flash'
+    model_name: 'deepseek/deepseek-v4-flash'
     max_refinement_rounds: 5
     interactive: false
     # api_key: 'your-api-key' # Alternatively, place it here
     
     # Optional: Configure specific models for different agents
     agent_models:
-      PLANNER: 'gpt-4'
-      CODER: 'gemini-1.5-pro'
-      VERIFIER: 'gemini-1.5-flash'
+      PLANNER: 'deepseek/deepseek-v4-flash'
+      CODER: 'deepseek/deepseek-v4-flash'
+      VERIFIER: 'deepseek/deepseek-v4-flash'
     ```
 
 ## Usage
@@ -109,6 +109,155 @@ Using uv:
 ```bash
 uv run python dsstar.py --data-files file1.xlsx file2.xlsx --query "What is the total sales for each department?"
 ```
+
+### Google Colab with KramaBench
+
+Run the following cells in order. The second clone downloads the public
+[KramaBench repository](https://github.com/mitdbg/KramaBench), including its
+workloads and data.
+
+```python
+%pip install -q uv
+# Replace the URL below with the GitHub repository/branch containing these changes.
+!git clone https://github.com/YOUR_ACCOUNT/DS-Star.git
+!git clone https://github.com/mitdbg/KramaBench.git
+!cd DS-Star && uv sync
+```
+
+Set the OpenRouter key without writing it to the repository. In Colab, add a
+secret named `OPENROUTER_API_KEY` (key icon in the left sidebar), then run:
+
+```python
+from google.colab import userdata
+import os
+
+os.environ["OPENROUTER_API_KEY"] = userdata.get("OPENROUTER_API_KEY")
+```
+
+Choose one KramaBench task and run DS-STAR. Change `DOMAIN` and `TASK_ID` as
+needed. This cell reads the query and expands all files/globs declared by that
+task's `data_sources`.
+
+```python
+import glob
+import json
+import subprocess
+from pathlib import Path
+
+DSSTAR_DIR = Path("/content/DS-Star")
+KRAMA_DIR = Path("/content/KramaBench")
+DOMAIN = "legal"
+TASK_ID = "legal-hard-1"
+
+tasks = json.loads((KRAMA_DIR / "workload" / f"{DOMAIN}.json").read_text())
+task = next(item for item in tasks if item["id"] == TASK_ID)
+sources = task["data_sources"]
+if isinstance(sources, str):
+    sources = [sources]
+
+data_root = KRAMA_DIR / "data"
+data_files = []
+for source in sources:
+    matches = glob.glob(str(data_root / "**" / source), recursive=True)
+    data_files.extend(path for path in matches if Path(path).is_file())
+data_files = sorted(set(data_files))
+
+if not data_files:
+    raise FileNotFoundError(f"No KramaBench data found for {TASK_ID}: {sources}")
+
+command = [
+    "uv", "run", "python", "dsstar.py",
+    "--data-files", *data_files,
+    "--query", task["query"],
+]
+subprocess.run(command, cwd=DSSTAR_DIR, check=True)
+```
+
+The final answer and all intermediate artifacts are written under
+`/content/DS-Star/runs/<run_id>/`.
+
+### Run a complete KramaBench domain on Kaggle
+
+KramaBench has six domains: `archaeology`, `astronomy`, `biomedical`,
+`environment`, `legal`, and `wildfire`. `run_kramabench.py` reads the domain's
+JSON workload, loads every file under that domain's `data/<domain>/input`
+directory, and runs the full DS-STAR pipeline once per task. File analyses are
+cached once per domain, so later questions reuse them instead of calling the
+Analyzer again for the same files.
+
+Create a Kaggle Notebook, enable **Internet**, and run:
+
+```python
+%pip install -q uv
+!git clone https://github.com/YOUR_ACCOUNT/DS-Star.git /kaggle/working/DS-Star
+!git clone https://github.com/mitdbg/KramaBench.git /kaggle/working/KramaBench
+!cd /kaggle/working/DS-Star && uv sync
+```
+
+Add `OPENROUTER_API_KEY` under **Add-ons → Secrets**, enable the secret for the
+notebook, then load it without printing or saving the key:
+
+```python
+from kaggle_secrets import UserSecretsClient
+import os
+
+os.environ["OPENROUTER_API_KEY"] = (
+    UserSecretsClient().get_secret("OPENROUTER_API_KEY")
+)
+```
+
+Test one task before starting a paid batch:
+
+```python
+!cd /kaggle/working/DS-Star && uv run python run_kramabench.py \
+  --kramabench-dir /kaggle/working/KramaBench \
+  --domain legal \
+  --limit 1 \
+  --output-dir /kaggle/working/kramabench_output
+```
+
+Run every question in one domain (remove `--limit`):
+
+```python
+!cd /kaggle/working/DS-Star && uv run python run_kramabench.py \
+  --kramabench-dir /kaggle/working/KramaBench \
+  --domain legal \
+  --output-dir /kaggle/working/kramabench_output
+```
+
+Run all six domains:
+
+```python
+!cd /kaggle/working/DS-Star && uv run python run_kramabench.py \
+  --kramabench-dir /kaggle/working/KramaBench \
+  --domain all \
+  --output-dir /kaggle/working/kramabench_output
+```
+
+Useful alternatives:
+
+```bash
+# Run one exact task
+uv run python run_kramabench.py --kramabench-dir /kaggle/working/KramaBench \
+  --domain legal --task-id legal-hard-1
+
+# Run 5 tasks beginning at index 10
+uv run python run_kramabench.py --kramabench-dir /kaggle/working/KramaBench \
+  --domain legal --start 10 --limit 5
+```
+
+Outputs are saved after every task:
+
+- `kramabench_output/manifest.jsonl`: append-only task status for resuming.
+- `kramabench_output/summary.csv`: latest status of each task.
+- `kramabench_output/analysis_cache/<domain>/`: reusable analysis of every file.
+- `kramabench_output/runs/<domain>_<task-id>/`: full DS-STAR artifacts.
+
+Re-running the same command with the same output directory skips successful
+tasks and retries unfinished/failed tasks. Kaggle includes files under
+`/kaggle/working` when you choose **Save Version → Save & Run All**, so the
+manifest, summary, final answers, generated code, and logs are retained as
+notebook-version output.
 
 ### Resuming a Run
 
@@ -161,8 +310,8 @@ The following options are available in `config.yaml` and can be overridden by CL
 
 - `run_id` (string): The ID of a run to resume.
 - `max_refinement_rounds` (int): The maximum number of times the agent will try to refine its plan.
-- `api_key` (string): Your Gemini API key.
-- `model_name` (string): The Gemini model to use (e.g., `gemini-1.5-flash`).
+- `api_key` (string): Your model provider API key.
+- `model_name` (string): The OpenRouter model ID to use (default: `deepseek/deepseek-v4-flash`).
 - `interactive` (bool): If true, waits for user input before executing each step.
 - `auto_debug` (bool): If true, the `Debugger` agent will automatically try to fix failing code.
 - `execution_timeout` (int): Timeout in seconds for code execution.
@@ -173,6 +322,17 @@ The following options are available in `config.yaml` and can be overridden by CL
 ## Providers
 
 DS-STAR supports multiple AI model providers. Each provider requires specific environment variables to be configured:
+
+### OpenRouter (DeepSeek V4 Flash)
+
+**Provider Identifier**: OpenRouter DeepSeek models prefixed with `deepseek/`
+
+**Environment Variable**:
+```bash
+export OPENROUTER_API_KEY='sk-or-v1-...'
+```
+
+**Model Example**: `deepseek/deepseek-v4-flash`
 
 ### Google Gemini
 
