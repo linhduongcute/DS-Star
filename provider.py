@@ -79,6 +79,36 @@ class OpenAIProvider(ModelProvider):
         return response.choices[0].message.content
 
 
+class OpenRouterProvider(ModelProvider):
+    """Provider for OpenRouter's OpenAI-compatible API."""
+
+    def __init__(self, config_api_key: str, model_name: str):
+        self.api_key = os.getenv(self.env_var_name, config_api_key)
+        if not self.api_key:
+            raise ValueError(f"Missing API key for {model_name}. Env var = {self.env_var_name}.")
+
+        self.model_name = model_name
+        self.client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    @classmethod
+    def provider_instance(cls, model_name: str) -> bool:
+        return model_name.startswith("deepseek/")
+
+    @property
+    def env_var_name(self) -> str:
+        return "OPENROUTER_API_KEY"
+
+    def generate_content(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content
+
+
 class OllamaProvider(ModelProvider):
     """Provider for Ollama models."""
 

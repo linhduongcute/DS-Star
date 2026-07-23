@@ -3,6 +3,7 @@ import json
 import subprocess
 import re
 import uuid
+import hashlib
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 import sys
@@ -10,7 +11,13 @@ import atexit
 import yaml
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from provider import ModelProvider, GeminiProvider, OllamaProvider, OpenAIProvider
+from provider import (
+    ModelProvider,
+    GeminiProvider,
+    OllamaProvider,
+    OpenAIProvider,
+    OpenRouterProvider,
+)
 
 # =============================================================================
 # CONFIGURATION & PROMPT TEMPLATES
@@ -35,6 +42,7 @@ class DSConfig:
     runs_dir: str = "runs"
     data_dir: str = "data"
     code_library_dir: str = "code_library"
+    analysis_cache_dir: Optional[str] = None
     agent_models: Dict[str, str] = field(default_factory=dict)
     
     def __post_init__(self):
@@ -246,7 +254,7 @@ class DS_STAR_Agent:
         
         def get_provider_for_model(model_name: str, config: DSConfig) -> ModelProvider:
             provider_cls = None
-            for provider in [OllamaProvider, OpenAIProvider, GeminiProvider]:
+            for provider in [OllamaProvider, OpenRouterProvider, OpenAIProvider, GeminiProvider]:
                 if provider.provider_instance(model_name):
                     provider_cls = provider
                     break
@@ -374,7 +382,22 @@ class DS_STAR_Agent:
 
     def analyze_data(self, filename: str) -> Dict[str, str]:
         prompt = PROMPT_TEMPLATES["analyzer"].format(filename=filename)
-        
+        cache_path = None
+        if self.config.analysis_cache_dir:
+            file_path = Path(filename).resolve()
+            analyzer_model = getattr(
+                self.providers.get("ANALYZER"),
+                "model_name",
+                self.config.model_name,
+            )
+            cache_key = hashlib.sha256(
+                f"{file_path}|{file_path.stat().st_size}|{analyzer_model}|{prompt}".encode()
+            ).hexdigest()
+            cache_path = Path(self.config.analysis_cache_dir) / f"{cache_key}.json"
+            if cache_path.exists():
+                self.controller.logger.info(f"Using cached analysis for {filename}")
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+
         result = self.controller.execute_step(
             "analyzer",
             step_func=lambda prompt=prompt, **kwargs: self._call_model("ANALYZER", prompt),  # FIXED
@@ -385,7 +408,14 @@ class DS_STAR_Agent:
         code = self._extract_code_block(result)
         code, exec_result = self._execute_and_debug_code(code, [filename], data_desc="")
 
-        return {"code": code, "result": exec_result, "filename": filename}
+        analysis = {"code": code, "result": exec_result, "filename": filename}
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(analysis, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        return analysis
 
     def plan_next_step(self, query: str, data_desc: str, current_plan: List[str], last_result: Optional[str]) -> str:
         if not current_plan:
@@ -642,8 +672,10 @@ def main():
         'run_id': args.resume or config_defaults.get('run_id'),
         'interactive': args.interactive or config_defaults.get('interactive', False),
         'max_refinement_rounds': args.max_rounds or config_defaults.get('max_refinement_rounds', 5),
+        'api_key': config_defaults.get('api_key'),
         'model_name': config_defaults.get('model_name'),
-        'preserve_artifacts': config_defaults.get('preserve_artifacts', True)
+        'preserve_artifacts': config_defaults.get('preserve_artifacts', True),
+        'agent_models': config_defaults.get('agent_models', {})
     }
     
     # Filter out None values so dataclass defaults are used
