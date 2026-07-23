@@ -7,6 +7,19 @@ import ollama
 class ModelProvider(ABC):
     """Abstract base class for model providers."""
 
+    def _record_usage(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
+        self.total_input_tokens = getattr(self, "total_input_tokens", 0) + (input_tokens or 0)
+        self.total_output_tokens = getattr(self, "total_output_tokens", 0) + (output_tokens or 0)
+
+    def get_usage(self) -> dict:
+        input_tokens = getattr(self, "total_input_tokens", 0)
+        output_tokens = getattr(self, "total_output_tokens", 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+
     @classmethod
     @abstractmethod
     def provider_instance(cls, model_name: str) -> bool:
@@ -49,6 +62,12 @@ class GeminiProvider(ModelProvider):
         
     def generate_content(self, prompt: str) -> str:
         response = self.model.generate_content(prompt)
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            self._record_usage(
+                getattr(usage, "prompt_token_count", 0),
+                getattr(usage, "candidates_token_count", 0),
+            )
         return response.text
 
 
@@ -76,6 +95,8 @@ class OpenAIProvider(ModelProvider):
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}]
         )
+        if response.usage:
+            self._record_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
         return response.choices[0].message.content
 
 
@@ -106,6 +127,8 @@ class OpenRouterProvider(ModelProvider):
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}],
         )
+        if response.usage:
+            self._record_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
         return response.choices[0].message.content
 
 
@@ -137,5 +160,9 @@ class OllamaProvider(ModelProvider):
         response = self.client.chat(
             self.model_name,
             messages=[{"role": "user", "content": prompt}]
+        )
+        self._record_usage(
+            getattr(response, "prompt_eval_count", 0),
+            getattr(response, "eval_count", 0),
         )
         return response.message.content

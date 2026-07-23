@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +87,10 @@ def write_summary_csv(manifest_path: Path, summary_path: Path) -> None:
         "final_result",
         "expected_answer",
         "answer_type",
+        "runtime_seconds",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
         "error",
         "finished_at",
     ]
@@ -93,6 +98,37 @@ def write_summary_csv(manifest_path: Path, summary_path: Path) -> None:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(latest.values())
+
+
+def print_domain_summary(manifest_path: Path, domain: str, data_file_count: int) -> None:
+    latest = {}
+    with manifest_path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("domain") == domain:
+                latest[record["task_id"]] = record
+
+    records = list(latest.values())
+    runtime = sum(record.get("runtime_seconds", 0) or 0 for record in records)
+    input_tokens = sum(record.get("input_tokens", 0) or 0 for record in records)
+    output_tokens = sum(record.get("output_tokens", 0) or 0 for record in records)
+    succeeded = sum(record.get("status") == "success" for record in records)
+    failed = sum(record.get("status") == "failed" for record in records)
+
+    print("\n" + "=" * 60)
+    print(f"DOMAIN SUMMARY: {domain}")
+    print(f"Data files:     {data_file_count:,}")
+    print(f"Tasks recorded: {len(records):,}")
+    print(f"Succeeded:      {succeeded:,}")
+    print(f"Failed:         {failed:,}")
+    print(f"Runtime:        {runtime:,.2f} seconds")
+    print(f"Input tokens:   {input_tokens:,}")
+    print(f"Output tokens:  {output_tokens:,}")
+    print(f"Total tokens:   {input_tokens + output_tokens:,}")
+    print("=" * 60)
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,6 +187,7 @@ def main() -> None:
 
             run_id = safe_run_id(domain, task_id)
             print(f"[RUN] {task_id}: all {len(data_files)} {domain} data file(s)")
+            started_at = time.perf_counter()
             config = DSConfig(
                 run_id=run_id,
                 max_refinement_rounds=defaults.get("max_refinement_rounds", 5),
@@ -166,8 +203,10 @@ def main() -> None:
                 agent_models=defaults.get("agent_models", {}),
             )
 
+            agent = None
             try:
-                result = DS_STAR_Agent(config).run_pipeline(task["query"], data_files)
+                agent = DS_STAR_Agent(config)
+                result = agent.run_pipeline(task["query"], data_files)
                 record = {
                     "domain": domain,
                     "task_id": task_id,
@@ -197,8 +236,24 @@ def main() -> None:
                 }
                 print(f"[FAILED] {task_id}: {exc}")
 
+            usage = agent.get_model_usage() if agent else {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+            record.update(usage)
+            record["runtime_seconds"] = round(time.perf_counter() - started_at, 3)
+            print(
+                f"[METRICS] {task_id}: "
+                f"runtime={record['runtime_seconds']:.3f}s, "
+                f"input={record['input_tokens']:,}, "
+                f"output={record['output_tokens']:,}, "
+                f"total={record['total_tokens']:,}"
+            )
             append_manifest(manifest_path, record)
             write_summary_csv(manifest_path, summary_path)
+
+        print_domain_summary(manifest_path, domain, len(data_files))
 
 
 if __name__ == "__main__":

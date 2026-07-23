@@ -313,6 +313,15 @@ class DS_STAR_Agent:
             error_msg = f"Error calling model for {agent_name}: {str(e)}"
             self.controller.logger.error(error_msg)
             raise
+
+    def get_model_usage(self) -> Dict[str, int]:
+        """Return token usage accumulated by all model providers in this run."""
+        totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        for provider in self.providers.values():
+            usage = provider.get_usage()
+            for key in totals:
+                totals[key] += usage[key]
+        return totals
     
     def _extract_code_block(self, response: str) -> str:
         """Extract Python code from markdown blocks."""
