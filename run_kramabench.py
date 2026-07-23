@@ -14,7 +14,7 @@ from dsstar import DSConfig, DS_STAR_Agent
 
 
 DOMAINS = (
-    "archaeology",
+    "archeology",
     "astronomy",
     "biomedical",
     "environment",
